@@ -1,0 +1,236 @@
+Jenkins CI/CD Pipeline with ECR & ArgoCD: End-to-End Documentation
+Overview
+This guide provides complete steps to set up an automated CI/CD pipeline using Jenkins, AWS ECR, and ArgoCD. The pipeline builds a Docker image for a Java application, pushes it to ECR, updates the image tag in a Kubernetes manifest stored in GitHub, and allows ArgoCD to deploy the new image to a Kubernetes cluster.
+
+Technologies Used
+Jenkins: Automation server for CI/CD
+
+
+Docker: Containerization
+
+
+AWS ECR: Container registry
+
+
+GitHub: Source code and Kubernetes manifests repository
+
+
+ArgoCD: Kubernetes-native GitOps tool
+
+
+Kubernetes: Container orchestration platform
+
+
+
+Prerequisites
+Jenkins Server installed with:
+
+
+Docker installed and configured
+
+
+AWS CLI configured with IAM access
+
+
+Required Jenkins plugins: Pipeline, Git, Credentials Binding
+
+
+GitHub Repositories:
+
+
+Java Maven Project: https://github.com/Ashfaq9999/project-1-maven-jenkins-CICD-docker-eks-
+
+
+Kubernetes Manifest Repo: https://github.com/Ashfaq9999/Kubernetes-Manifests-file
+
+
+AWS ECR Repository:
+
+
+Create manually or let Jenkins pipeline auto-create it.
+
+
+ArgoCD Setup:
+
+
+ArgoCD connected to Kubernetes-Manifests-file repo
+
+
+Watching deploy_svc.yml for changes
+
+
+Jenkins Credentials:
+
+
+aws-ecr: Username/password (user: AWS, pass: AWS CLI token)
+
+
+github-creds: GitHub username/password or PAT
+
+
+
+Jenkinsfile (Declarative Pipeline)
+pipeline {
+    agent any
+
+    environment {
+        AWS_REGION = 'ap-south-1'
+        ECR_REGISTRY = '796973477832.dkr.ecr.ap-south-1.amazonaws.com'
+        ECR_REPO_NAME = 'java-app'
+    }
+
+    stages {
+        stage('Checkout Code') {
+            steps {
+                git branch: 'main', url: 'https://github.com/Ashfaq9999/project-1-maven-jenkins-CICD-docker-eks-.git'
+            }
+        }
+
+        stage('Determine Next Image Tag') {
+            steps {
+                script {
+                    def lastTag = sh(
+                        script: "aws ecr describe-images --repository-name ${ECR_REPO_NAME} --region ${AWS_REGION} --query 'imageDetails[].imageTags[]' --output text | grep -Eo '[0-9]+' | sort -n | tail -1",
+                        returnStdout: true
+                    ).trim()
+                    env.IMAGE_TAG = (lastTag == '' || !lastTag.isInteger()) ? '1' : (lastTag.toInteger() + 1).toString()
+                    echo "✅ Using new image tag: ${env.IMAGE_TAG}"
+                }
+            }
+        }
+
+        stage('Ensure ECR Repo Exists') {
+            steps {
+                sh "aws ecr describe-repositories --repository-names ${ECR_REPO_NAME} --region ${AWS_REGION} || aws ecr create-repository --repository-name ${ECR_REPO_NAME} --region ${AWS_REGION}"
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    sh "docker build -t java-app:${IMAGE_TAG} ."
+                    sh "docker tag java-app:${IMAGE_TAG} ${ECR_REGISTRY}/${ECR_REPO_NAME}:${IMAGE_TAG}"
+                }
+            }
+        }
+
+        stage('Login to ECR') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'aws-ecr', usernameVariable: 'AWS_USER', passwordVariable: 'AWS_PASS')]) {
+                    script {
+                        sh "aws ecr get-login-password --region ${AWS_REGION} | docker login --username ${AWS_USER} --password-stdin ${ECR_REGISTRY}"
+                    }
+                }
+            }
+        }
+
+        stage('Push to ECR') {
+            steps {
+                sh "docker push ${ECR_REGISTRY}/${ECR_REPO_NAME}:${IMAGE_TAG}"
+            }
+        }
+
+        stage('Update ArgoCD Deployment File') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'github-creds', usernameVariable: 'GIT_USER', passwordVariable: 'GIT_PASS')]) {
+                    script {
+                        sh """
+                            git config --global user.email jenkins@ci.local
+                            git config --global user.name 'Jenkins CI'
+                            cd Kubernetes-Manifests-file
+
+                            sed -i 's|image: .*|image: ${ECR_REGISTRY}/${ECR_REPO_NAME}:${IMAGE_TAG}|' deploy_svc.yml
+
+                            git add deploy_svc.yml
+
+                            if git diff --cached --quiet; then
+                                echo "Image already up to date. Forcing push anyway to trigger ArgoCD."
+                            else
+                                git commit -m 'CI: Update image tag to ${IMAGE_TAG}'
+                            fi
+
+                            git push https://${GIT_USER}:${GIT_PASS}@github.com/Ashfaq9999/project-1-maven-jenkins-CICD-docker-eks-.git HEAD:main
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Cleanup (optional)') {
+            steps {
+                sh "docker rmi java-app:${IMAGE_TAG} || true"
+                sh "docker rmi ${ECR_REGISTRY}/${ECR_REPO_NAME}:${IMAGE_TAG} || true"
+            }
+        }
+    }
+
+    post {
+        success {
+            echo '✅ Docker image built and pushed to ECR successfully!'
+        }
+        failure {
+            echo '❌ Build failed. Check logs for more details.'
+        }
+    }
+}
+
+
+Flow Summary
+Jenkins checks out application code from GitHub.
+
+
+Jenkins determines the next incremental Docker tag.
+
+
+Docker image is built and tagged.
+
+
+Image is pushed to AWS ECR.
+
+
+Kubernetes manifest (deploy_svc.yml) is updated with the new image tag.
+
+
+Changes are pushed to the manifest repo.
+
+
+ArgoCD detects change and deploys the updated image to Kubernetes.
+
+
+
+Notes
+Use PAT (Personal Access Token) for GitHub auth instead of a password.
+
+
+Ensure ArgoCD app is correctly configured with auto-sync or manual sync as needed.
+
+
+You can enhance this pipeline with notifications (Slack, Discord), or integrate with a testing stage.
+
+
+
+Troubleshooting
+Docker push fails: Check ECR login, permissions, or IAM roles.
+
+
+Manifest not updated: Ensure the correct GitHub credentials and path.
+
+
+ArgoCD not syncing: Verify sync policy and webhook triggers.
+
+
+
+Optional Enhancements
+Add ArgoCD CLI to auto-sync application after manifest update
+
+
+Add SonarQube static code analysis
+
+
+Add test stage before build
+
+
+Archive artifacts or reports for traceability
+
+
+
