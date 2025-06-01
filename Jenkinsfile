@@ -8,7 +8,7 @@ pipeline {
     stages {
         stage('Checkout Code') {
             steps {
-                git branch: 'main', url: 'https://github.com/kunchalaravinder93/project-1-maven-jenkins-CICD-docker-eks-.git'
+                git branch: 'main', url: 'https://github.com/Ashfaq9999/project-1-maven-jenkins-CICD-docker-eks-.git'
             }
         }
 
